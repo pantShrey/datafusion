@@ -23,7 +23,7 @@
 
 use std::cmp::Ordering;
 use std::collections::{HashMap, VecDeque};
-use std::fs::File;
+use std::fmt::Debug;
 use std::io::BufReader;
 use std::mem::size_of;
 use std::ops::Range;
@@ -52,7 +52,7 @@ use arrow::datatypes::SchemaRef;
 use arrow::ipc::reader::StreamReader;
 use datafusion_common::cast::as_uint64_array;
 use datafusion_common::{JoinType, NullEquality, Result, exec_err, internal_err};
-use datafusion_execution::disk_manager::RefCountedTempFile;
+use datafusion_execution::SpillFile;
 use datafusion_execution::memory_pool::MemoryReservation;
 use datafusion_execution::runtime_env::RuntimeEnv;
 use datafusion_physical_expr_common::physical_expr::PhysicalExprRef;
@@ -222,7 +222,7 @@ pub(super) enum FilterState {
 
 /// A buffered batch that contains contiguous rows with same join key
 ///
-/// `BufferedBatch` can exist as either an in-memory `RecordBatch` or a `RefCountedTempFile` on disk.
+/// `BufferedBatch` can exist as either an in-memory `RecordBatch` or a `SpillFile`.
 #[derive(Debug)]
 pub(super) struct BufferedBatch {
     /// Represents in memory or spilled record batch
@@ -298,14 +298,23 @@ impl BufferedBatch {
 
 // TODO: Spill join arrays (https://github.com/apache/datafusion/pull/17429)
 // Used to represent whether the buffered data is currently in memory or written to disk
-#[derive(Debug)]
 pub(super) enum BufferedBatchState {
     // In memory record batch
     InMemory(RecordBatch),
     // Spilled temp file
-    Spilled(RefCountedTempFile),
+    Spilled(Arc<dyn SpillFile>),
 }
 
+impl Debug for BufferedBatchState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InMemory(batch) => f.debug_tuple("InMemory").field(batch).finish(),
+            Self::Spilled(_) => {
+                write!(f, "Spilled(Custom_Backend)")
+            }
+        }
+    }
+}
 /// Sort-Merge join stream for Inner/Left/Right/Full joins.
 ///
 /// Named "materializing" because it builds explicit `(streamed, buffered)` row
@@ -1584,7 +1593,8 @@ impl MaterializingSortMergeJoinStream {
                 match &bb.batch {
                     BufferedBatchState::InMemory(batch) => Some(batch.clone()),
                     BufferedBatchState::Spilled(spill_file) => {
-                        let file = BufReader::new(File::open(spill_file.path()).ok()?);
+                        let sync_reader = spill_file.open_sync_reader().ok()?;
+                        let file = BufReader::new(sync_reader);
                         let reader = StreamReader::try_new(file, None).ok()?;
                         reader.into_iter().next()?.ok()
                     }
@@ -1819,7 +1829,8 @@ fn fetch_right_columns_from_batch_by_idxs(
             let mut buffered_cols: Vec<ArrayRef> =
                 Vec::with_capacity(buffered_indices.len());
 
-            let file = BufReader::new(File::open(spill_file.path())?);
+            let sync_reader = spill_file.open_sync_reader()?;
+            let file = BufReader::new(sync_reader);
             let reader = StreamReader::try_new(file, None)?;
 
             for batch in reader {

@@ -119,7 +119,6 @@
 //! factor than the pair-materialization approach.
 
 use std::cmp::Ordering;
-use std::fs::File;
 use std::io::BufReader;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -140,9 +139,8 @@ use arrow::util::bit_util::apply_bitwise_binary_op;
 use datafusion_common::{
     JoinSide, JoinType, NullEquality, Result, ScalarValue, internal_err,
 };
-use datafusion_execution::SendableRecordBatchStream;
-use datafusion_execution::disk_manager::RefCountedTempFile;
 use datafusion_execution::memory_pool::MemoryReservation;
+use datafusion_execution::{SendableRecordBatchStream, SpillFile};
 use datafusion_physical_expr_common::physical_expr::PhysicalExprRef;
 
 use futures::{Stream, StreamExt, ready};
@@ -257,7 +255,7 @@ pub(crate) struct BitwiseSortMergeJoinStream {
     // with many inner rows will buffer them all. See "Degenerate cases"
     // in exec.rs. Spilled to disk when memory reservation fails.
     inner_key_buffer: Vec<RecordBatch>,
-    inner_key_spill: Option<RefCountedTempFile>,
+    inner_key_spill: Option<Arc<dyn SpillFile>>,
 
     // True when buffer_inner_key_group returned Pending after partially
     // filling inner_key_buffer. On re-entry, buffer_inner_key_group
@@ -777,7 +775,8 @@ impl BitwiseSortMergeJoinStream {
 
         // Process spilled inner batches first (read back from disk).
         if let Some(spill_file) = &self.inner_key_spill {
-            let file = BufReader::new(File::open(spill_file.path())?);
+            let sync_reader = spill_file.open_sync_reader()?;
+            let file = BufReader::new(sync_reader);
             let reader = StreamReader::try_new(file, None)?;
             for batch_result in reader {
                 let inner_slice = batch_result?;
