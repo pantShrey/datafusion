@@ -636,11 +636,6 @@ impl SpillFile for RefCountedTempFile {
             current_file_disk_usage: Arc::clone(&self.current_file_disk_usage),
         }))
     }
-
-    fn open_sync_reader(&self) -> Result<Box<dyn std::io::Read + Send>> {
-        let file = std::fs::File::open(self.path())?;
-        Ok(Box::new(file))
-    }
 }
 #[cfg(test)]
 mod tests {

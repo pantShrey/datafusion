@@ -38,19 +38,6 @@ pub trait SpillFile: Send + Sync {
 
     /// Opens a writer for appending data to this file.
     fn open_writer(&self) -> Result<Box<dyn SpillWriter>>;
-
-    /// Opens a synchronous reader for this file.
-    /// Used by legacy operators (like SortMergeJoin) that haven't been fully migrated to async.
-    ///
-    /// Backends that only support async reads should leave this default implementation,
-    /// which will safely return a NotImplemented error if used in synchronous contexts.
-    fn open_sync_reader(&self) -> Result<Box<dyn std::io::Read + Send>> {
-        datafusion_common::exec_err!(
-            "Synchronous reads are not supported by this spill backend. \
-            This backend cannot be used with synchronous operators like SortMergeJoin \
-            until they are refactored to be fully asynchronous."
-        )
-    }
 }
 
 /// Writer for spill file backends.
